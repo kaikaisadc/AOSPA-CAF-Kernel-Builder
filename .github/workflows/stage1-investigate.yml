@@ -1,0 +1,283 @@
+name: "Stage 1: 源码调研"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  investigate:
+    name: 调研 AOSPA CAF 源码结构
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 清理磁盘空间
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          test-mode: false
+          remove-android: true
+          remove-dotnet: true
+          remove-haskell: true
+          remove-tool-cache: true
+          remove-swap: true
+          remove-packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+
+      - name: 检查 Runner 环境
+        run: |
+          echo "=== 系统信息 ==="
+          uname -a
+          echo ""
+          echo "=== CPU ==="
+          nproc --all
+          echo ""
+          echo "=== 内存 ==="
+          free -h
+          echo ""
+          echo "=== 磁盘空间 ==="
+          df -h /
+          echo ""
+          echo "=== 已安装工具 ==="
+          git --version
+          python3 --version
+          clang --version 2>/dev/null || echo "clang: 未安装"
+          gcc --version 2>/dev/null | head -1 || echo "gcc: 未安装"
+          make --version 2>/dev/null | head -1 || echo "make: 未安装"
+          bc --version 2>/dev/null | head -1 || echo "bc: 未安装"
+          flex --version 2>/dev/null || echo "flex: 未安装"
+          bison --version 2>/dev/null | head -1 || echo "bison: 未安装"
+          libssl=$(dpkg -l | grep libssl-dev 2>/dev/null | head -1) || true
+          echo "libssl-dev: ${libssl:-未安装}"
+          echo ""
+          echo "=== ccache ==="
+          ccache --version 2>/dev/null | head -1 || echo "ccache: 未安装"
+
+      - name: 配置 Git
+        run: |
+          git config --global user.name "BuildBot"
+          git config --global user.email "buildbot@aospa-caf.local"
+          git lfs install --skip-repo 2>/dev/null || true
+
+      - name: 克隆 AOSPA CAF 内核源码
+        run: |
+          echo "=== 克隆 android_kernel_xiaomi_sm8550 (vauxite) ==="
+          git clone --depth 1 --branch vauxite \
+            https://github.com/AOSPA/android_kernel_xiaomi_sm8550.git \
+            kernel/xiaomi_sm8550
+
+          echo ""
+          echo "=== 克隆完成，统计大小 ==="
+          du -sh kernel/xiaomi_sm8550
+          echo ""
+          echo "=== .git 大小 ==="
+          du -sh kernel/xiaomi_sm8550/.git
+
+      - name: 克隆 AOSPA 构建框架
+        run: |
+          echo "=== 克隆 kernel_platform_build (kailua) ==="
+          git clone --depth 1 --branch kailua \
+            https://github.com/AOSPA/kernel_platform_build.git \
+            kernel/platform_build
+
+          echo ""
+          echo "=== 克隆完成，统计大小 ==="
+          du -sh kernel/platform_build
+
+      - name: 检查内核版本信息
+        run: |
+          echo "=== Makefile 版本 ==="
+          head -6 kernel/xiaomi_sm8550/Makefile
+
+          echo ""
+          echo "=== 最近 5 条提交 ==="
+          cd kernel/xiaomi_sm8550
+          git log --oneline -5
+          cd ..
+
+      - name: 检查 kalama 构建配置
+        run: |
+          echo "=== build.config.msm.kalama ==="
+          cat kernel/xiaomi_sm8550/build.config.msm.kalama
+
+          echo ""
+          echo "=== build.config.msm.common (前 30 行) ==="
+          head -30 kernel/xiaomi_sm8550/build.config.msm.common
+
+          echo ""
+          echo "=== build.config.msm.gki ==="
+          cat kernel/xiaomi_sm8550/build.config.msm.gki
+
+      - name: 检查 nuwa 设备配置
+        run: |
+          echo "=== vendor/nuwa_GKI.config ==="
+          cat kernel/xiaomi_sm8550/arch/arm64/configs/vendor/nuwa_GKI.config
+
+          echo ""
+          echo "=== vendor/kalama_GKI.config ==="
+          cat kernel/xiaomi_sm8550/arch/arm64/configs/vendor/kalama_GKI.config
+
+      - name: 检查 gki_defconfig
+        run: |
+          echo "=== gki_defconfig (前 50 行) ==="
+          head -50 kernel/xiaomi_sm8550/arch/arm64/configs/gki_defconfig
+
+          echo ""
+          echo "=== gki_defconfig 行数 ==="
+          wc -l kernel/xiaomi_sm8550/arch/arm64/configs/gki_defconfig
+
+      - name: 检查构建框架结构
+        run: |
+          echo "=== platform_build 目录结构 ==="
+          ls -la kernel/platform_build/
+
+          echo ""
+          echo "=== build.sh 是否存在 ==="
+          if [ -f kernel/platform_build/build.sh ]; then
+            echo "存在"
+            head -30 kernel/platform_build/build.sh
+          else
+            echo "不存在"
+          fi
+
+          echo ""
+          echo "=== _setup_env.sh 是否存在 ==="
+          if [ -f kernel/platform_build/_setup_env.sh ]; then
+            echo "存在"
+          else
+            echo "不存在"
+          fi
+
+      - name: 检查源码树关键目录
+        run: |
+          echo "=== 源码根目录 ==="
+          ls kernel/xiaomi_sm8550/ | head -30
+
+          echo ""
+          echo "=== drivers/ 子目录数量 ==="
+          ls kernel/xiaomi_sm8550/drivers/ | wc -l
+
+          echo ""
+          echo "=== arch/arm64/boot/dts/ 中是否有 qcom ==="
+          ls kernel/xiaomi_sm8550/arch/arm64/boot/dts/ 2>/dev/null || echo "不存在"
+
+          echo ""
+          echo "=== 是否存在 common/ 子目录 ==="
+          ls -d kernel/xiaomi_sm8550/common/ 2>/dev/null || echo "不存在 (CAF 源码直接在根目录)"
+
+      - name: 检查构建依赖需求
+        run: |
+          echo "=== 检查 build.config.common ==="
+          cat kernel/xiaomi_sm8550/build.config.common 2>/dev/null || echo "不存在"
+
+          echo ""
+          echo "=== 检查 build.config.aarch64 ==="
+          cat kernel/xiaomi_sm8550/build.config.aarch64 2>/dev/null || echo "不存在"
+
+          echo ""
+          echo "=== 检查 build.config.constants ==="
+          cat kernel/xiaomi_sm8550/build.config.constants 2>/dev/null || echo "不存在"
+
+      - name: 检查构建脚本依赖的工具链变量
+        run: |
+          echo "=== _setup_env.sh 中引用的 prebuilts 路径 ==="
+          grep -E 'PREBUILTS_BIN|CLANG_PREBUILT|GCC_CROSS_COMPILE|LZ4_PREBUILTS|DTC_PREBUILTS|LIBUFDT_PREBUILTS|BUILDTOOLS_PREBUILT' \
+            kernel/platform_build/_setup_env.sh || true
+
+          echo ""
+          echo "=== build.config.msm.common 中的工具链引用 ==="
+          grep -iE 'CLANG|GCC|CROSS_COMPILE|PREBUILT|TOOLCHAIN|HOSTCC|CC=' \
+            kernel/xiaomi_sm8550/build.config.msm.common 2>/dev/null || true
+
+          echo ""
+          echo "=== build.config.msm.kalama 中的工具链引用 ==="
+          grep -iE 'CLANG|GCC|CROSS_COMPILE|PREBUILT|TOOLCHAIN|HOSTCC|CC=' \
+            kernel/xiaomi_sm8550/build.config.msm.kalama 2>/dev/null || true
+
+      - name: 检查 modules 相关配置
+        run: |
+          echo "=== modules.list.msm.kalama ==="
+          head -20 kernel/xiaomi_sm8550/modules.list.msm.kalama 2>/dev/null || echo "不存在"
+
+          echo ""
+          echo "=== modules 数量 ==="
+          wc -l kernel/xiaomi_sm8550/modules.list.msm.kalama 2>/dev/null || true
+
+          echo ""
+          echo "=== gki_system_dlkm_modules ==="
+          if [ -f kernel/xiaomi_sm8550/android/gki_system_dlkm_modules ]; then
+            head -20 kernel/xiaomi_sm8550/android/gki_system_dlkm_modules
+            echo "..."
+            wc -l kernel/xiaomi_sm8550/android/gki_system_dlkm_modules
+          else
+            echo "不存在"
+          fi
+
+      - name: 汇总磁盘使用
+        run: |
+          echo "=== 总磁盘使用 ==="
+          du -sh kernel/
+          echo ""
+          echo "=== 剩余磁盘空间 ==="
+          df -h /
+
+      - name: 生成调研报告
+        run: |
+          {
+            echo "# Stage 1 调研报告"
+            echo ""
+            echo "## 内核版本"
+            head -6 kernel/xiaomi_sm8550/Makefile
+            echo ""
+            echo "## 源码大小"
+            du -sh kernel/xiaomi_sm8550
+            echo ""
+            echo "## 构建框架大小"
+            du -sh kernel/platform_build
+            echo ""
+            echo "## 关键配置文件"
+            echo "- build.config.msm.kalama: $(wc -l < kernel/xiaomi_sm8550/build.config.msm.kalama) 行"
+            echo "- build.config.msm.common: $(wc -l < kernel/xiaomi_sm8550/build.config.msm.common) 行"
+            echo "- build.config.msm.gki: $(wc -l < kernel/xiaomi_sm8550/build.config.msm.gki) 行"
+            echo "- vendor/nuwa_GKI.config: $(wc -l < kernel/xiaomi_sm8550/arch/arm64/configs/vendor/nuwa_GKI.config) 行"
+            echo "- vendor/kalama_GKI.config: $(wc -l < kernel/xiaomi_sm8550/arch/arm64/configs/vendor/kalama_GKI.config) 行"
+            echo "- gki_defconfig: $(wc -l < kernel/xiaomi_sm8550/arch/arm64/configs/gki_defconfig) 行"
+            echo ""
+            echo "## 构建脚本"
+            echo "- platform_build/build.sh: $([ -f kernel/platform_build/build.sh ] && echo '存在' || echo '不存在')"
+            echo "- platform_build/_setup_env.sh: $([ -f kernel/platform_build/_setup_env.sh ] && echo '存在' || echo '不存在')"
+            echo ""
+            echo "## 最近提交"
+            cd kernel/xiaomi_sm8550
+            git log --oneline -5
+            cd ..
+            echo ""
+            echo "## 下一步"
+            echo "1. 分析构建配置确定工具链需求"
+            echo "2. 编写 Stage 2 裸编译 workflow"
+            echo "3. 验证 build.sh 能否在 GitHub Actions 环境运行"
+          } > investigation-report.md
+
+          cat investigation-report.md
+
+      - name: 上传调研报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage1-investigation-report
+          path: investigation-report.md
+
+      - name: 上传关键配置文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage1-config-files
+          path: |
+            kernel/xiaomi_sm8550/Makefile
+            kernel/xiaomi_sm8550/build.config.msm.kalama
+            kernel/xiaomi_sm8550/build.config.msm.common
+            kernel/xiaomi_sm8550/build.config.msm.gki
+            kernel/xiaomi_sm8550/build.config.common
+            kernel/xiaomi_sm8550/build.config.aarch64
+            kernel/xiaomi_sm8550/build.config.constants
+            kernel/xiaomi_sm8550/arch/arm64/configs/gki_defconfig
+            kernel/xiaomi_sm8550/arch/arm64/configs/vendor/nuwa_GKI.config
+            kernel/xiaomi_sm8550/arch/arm64/configs/vendor/kalama_GKI.config
