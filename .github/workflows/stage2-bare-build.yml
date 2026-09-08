@@ -230,6 +230,11 @@ jobs:
           echo "--- common/build.config.gki ---"
           grep POST_DEFCONFIG_CMDS common/build.config.gki
 
+          # 禁用 GKI 认证工具打包 (缺少 prebuilts/kernel-build-tools)
+          echo "=== 禁用 GKI 认证工具 ==="
+          sed -i 's/^BUILD_GKI_CERTIFICATION_TOOLS=1/BUILD_GKI_CERTIFICATION_TOOLS=0/' common/build.config.gki.aarch64
+          grep BUILD_GKI_CERTIFICATION_TOOLS common/build.config.gki.aarch64
+
           # 尝试编译
           # BUILD_CONFIG 指向 msm-kernel 的 kalama 配置
           # build.sh 会在 ROOT_DIR 下运行
