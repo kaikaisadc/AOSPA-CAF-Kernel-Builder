@@ -204,6 +204,7 @@ jobs:
           export HOSTCC="clang"
           export HOSTCXX="clang++"
           export LD="ld.lld"
+          export NDK_TRIPLE=""
 
           # 尝试编译
           # BUILD_CONFIG 指向 msm-kernel 的 kalama 配置
