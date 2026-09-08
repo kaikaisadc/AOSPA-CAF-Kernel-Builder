@@ -204,7 +204,11 @@ jobs:
           export HOSTCC="clang"
           export HOSTCXX="clang++"
           export LD="ld.lld"
-          export NDK_TRIPLE=""
+
+          # 移除 NDK_TRIPLE 依赖 (内核编译不需要 NDK sysroot)
+          echo "=== 修改构建配置: 移除 NDK_TRIPLE ==="
+          sed -i '/^NDK_TRIPLE=/d' msm-kernel/build.config.aarch64
+          grep NDK_TRIPLE msm-kernel/build.config.aarch64 && echo "NDK_TRIPLE 仍存在!" || echo "NDK_TRIPLE 已移除"
 
           # 尝试编译
           # BUILD_CONFIG 指向 msm-kernel 的 kalama 配置
