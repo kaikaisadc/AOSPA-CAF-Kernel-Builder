@@ -23,14 +23,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 清理磁盘空间
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: endersonmenezes/free-disk-space@v3
         with:
-          android: true
-          dotnet: true
-          haskell: true
-          tool-cache: true
-          swap-storage: true
-          large-packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* mysql* dotnet-sdk-*"
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+          testing: false
 
       - name: 安装构建依赖
         run: |
@@ -223,16 +228,16 @@ jobs:
 
       - name: 收集编译日志
         if: always()
-        working-directory: kernel-build
         run: |
-          mkdir -p logs
+          mkdir -p kernel-build/logs
+          cd kernel-build
 
           # 编译日志
-          [ -f compile.log ] && cp compile.log logs/ || true
+          [ -f compile.log ] && cp compile.log logs/ || echo "compile.log 不存在" > logs/no-log.txt
 
           # 编译错误提取
           echo "=== 编译错误 (最后 100 行) ===" > logs/errors.txt
-          tail -100 compile.log 2>/dev/null >> logs/errors.txt || true
+          tail -100 compile.log 2>/dev/null >> logs/errors.txt || echo "无编译日志" >> logs/errors.txt
 
           # 目录结构
           echo "=== out/ 目录 ===" > logs/out-dir.txt
@@ -241,8 +246,8 @@ jobs:
           # 磁盘使用
           echo "=== 磁盘使用 ===" > logs/disk.txt
           df -h / >> logs/disk.txt 2>&1
-          du -sh . >> logs/disk.txt 2>&1
-          du -sh */ >> logs/disk.txt 2>&1
+          du -sh . >> logs/disk.txt 2>&1 || echo "kernel-build 不存在" >> logs/disk.txt
+          du -sh */ >> logs/disk.txt 2>&1 || true
 
           # 编译产物
           echo "=== 编译产物 ===" > logs/artifacts.txt
@@ -284,7 +289,6 @@ jobs:
 
       - name: 汇总结果
         if: always()
-        working-directory: kernel-build
         run: |
           echo "========================================"
           echo "       Stage 2 编译结果"
@@ -293,13 +297,13 @@ jobs:
             echo "状态: 成功"
             echo ""
             echo "产物:"
-            find . -name "Image" -type f 2>/dev/null | head -5
-            find . -name "*.ko" -type f 2>/dev/null | wc -l
+            find kernel-build -name "Image" -type f 2>/dev/null | head -5
+            find kernel-build -name "*.ko" -type f 2>/dev/null | wc -l
           else
             echo "状态: 失败"
             echo ""
             echo "失败原因 (最后 30 行日志):"
-            tail -30 compile.log 2>/dev/null || echo "无日志"
+            tail -30 kernel-build/compile.log 2>/dev/null || echo "无日志"
           fi
           echo ""
           echo "磁盘使用:"
