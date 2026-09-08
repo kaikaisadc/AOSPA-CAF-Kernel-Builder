@@ -46,7 +46,26 @@ jobs:
             libncurses-dev qtbase5-dev \
             dwarves zstd xz-utils \
             python3 python3-pip \
-            rsync cpio
+            rsync cpio zip
+
+          # soong_zip 替代脚本 (build.sh 硬编码调用 soong_zip 打包 test_mappings)
+          sudo tee /usr/local/bin/soong_zip > /dev/null << 'SCRIPT'
+          #!/bin/bash
+          # 模拟 soong_zip: soong_zip -o output.zip -C basedir -l filelist
+          out="" basedir="" listfile=""
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -o) out="$2"; shift 2;;
+              -C) basedir="$2"; shift 2;;
+              -l) listfile="$2"; shift 2;;
+              *) shift;;
+            esac
+          done
+          [ -z "$out" ] && exit 0
+          cd "$basedir"
+          zip -q "$out" $(cat "$listfile")
+          SCRIPT
+          sudo chmod +x /usr/local/bin/soong_zip
 
           echo "=== 工具版本 ==="
           clang --version | head -1
