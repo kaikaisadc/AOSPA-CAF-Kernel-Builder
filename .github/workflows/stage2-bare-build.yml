@@ -220,9 +220,15 @@ jobs:
           # 跳过 defconfig 一致性检查
           # 移除 NDK sysroot 后 CONFIG_UAPI_HEADER_TEST 会被 Kconfig 自动丢弃
           # 导致 savedefconfig 与原始 gki_defconfig 不匹配
+          # msm-kernel/build.config.gki 和 common/build.config.gki 都有此设置
+          # GKI 子构建 KERNEL_DIR=common, source 的是 common/build.config.gki
           echo "=== 跳过 defconfig 检查 ==="
           sed -i 's/^POST_DEFCONFIG_CMDS="check_defconfig"/POST_DEFCONFIG_CMDS=""/' msm-kernel/build.config.gki
+          sed -i 's/^POST_DEFCONFIG_CMDS="check_defconfig"/POST_DEFCONFIG_CMDS=""/' common/build.config.gki
+          echo "--- msm-kernel/build.config.gki ---"
           grep POST_DEFCONFIG_CMDS msm-kernel/build.config.gki
+          echo "--- common/build.config.gki ---"
+          grep POST_DEFCONFIG_CMDS common/build.config.gki
 
           # 尝试编译
           # BUILD_CONFIG 指向 msm-kernel 的 kalama 配置
