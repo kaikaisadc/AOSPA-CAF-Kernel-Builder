@@ -1,0 +1,307 @@
+name: "Stage 2: 裸编译验证"
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "构建变体"
+        required: true
+        type: choice
+        options:
+          - gki
+          - consolidate
+        default: gki
+
+jobs:
+  build:
+    name: 尝试编译 AOSPA CAF 内核
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 清理磁盘空间
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          tool-cache: true
+          swap-storage: true
+          large-packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* mysql* dotnet-sdk-*"
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            clang llvm lld ccache \
+            bc bison flex libssl-dev libelf-dev \
+            libncurses-dev qtbase5-dev \
+            dwarves zstd xz-utils \
+            python3 python3-pip \
+            rsync cpio
+
+          echo "=== 工具版本 ==="
+          clang --version | head -1
+          llvm-config --version
+          lld --version | head -1
+          ccache --version | head -1
+
+      - name: 检查环境
+        run: |
+          echo "=== 磁盘空间 ==="
+          df -h /
+          echo ""
+          echo "=== CPU ==="
+          nproc --all
+          echo ""
+          echo "=== 内存 ==="
+          free -h
+
+      - name: 配置 Git
+        run: |
+          git config --global user.name "BuildBot"
+          git config --global user.email "buildbot@aospa-caf.local"
+
+      - name: 准备工作目录结构
+        run: |
+          mkdir -p kernel-build
+          cd kernel-build
+
+          # 目录结构说明:
+          # $ROOT_DIR = kernel-build/
+          #   build/              <- kernel_platform_build (构建框架)
+          #   common/             <- Google ACK GKI 内核
+          #   msm-kernel/         <- AOSPA CAF 内核 (android_kernel_xiaomi_sm8550)
+          #   prebuilts/          <- 预编译工具链
+          #   build/kernel/build-tools/ <- AOSP build-tools (dtc 等)
+
+          echo "ROOT_DIR=$(pwd)" >> $GITHUB_ENV
+          echo "工作目录: $(pwd)"
+
+      - name: 克隆 AOSPA CAF 内核源码
+        working-directory: kernel-build
+        run: |
+          echo "=== 克隆 android_kernel_xiaomi_sm8550 (vauxite) -> msm-kernel/ ==="
+          git clone --depth 1 --branch vauxite \
+            https://github.com/AOSPA/android_kernel_xiaomi_sm8550.git \
+            msm-kernel
+
+          echo "源码大小: $(du -sh msm-kernel | cut -f1)"
+          echo "内核版本:"
+          head -5 msm-kernel/Makefile
+
+      - name: 克隆构建框架
+        working-directory: kernel-build
+        run: |
+          echo "=== 克隆 kernel_platform_build (kailua) -> build/ ==="
+          git clone --depth 1 --branch kailua \
+            https://github.com/AOSPA/kernel_platform_build.git \
+            build
+
+          echo "构建框架大小: $(du -sh build | cut -f1)"
+          echo "build.sh 存在: $([ -f build/build.sh ] && echo '是' || echo '否')"
+
+      - name: 克隆 Google ACK GKI 内核
+        working-directory: kernel-build
+        run: |
+          echo "=== 克隆 Google ACK common kernel (android13-5.15) -> common/ ==="
+          # CAF 混合构建需要 common/ 目录 (GKI 内核)
+          # 使用 android.googlesource.com 的 common 仓库
+          git clone --depth 1 --branch android13-5.15 \
+            https://android.googlesource.com/kernel/common \
+            common 2>&1 || {
+              echo "直接 clone 失败, 尝试通过 manifest 初始化..."
+              # 如果直接 clone 不行, 尝试只取需要的文件
+              mkdir -p common
+              cd common
+              git init
+              git remote add origin https://android.googlesource.com/kernel/common
+              git fetch --depth 1 origin android13-5.15
+              git checkout FETCH_HEAD
+              cd ..
+            }
+
+          echo "GKI 内核大小: $(du -sh common | cut -f1)"
+          echo "GKI 内核版本:"
+          head -5 common/Makefile 2>/dev/null || echo "Makefile 不存在"
+          echo "GKI build.config 存在: $([ -f common/build.config.gki.aarch64 ] && echo '是' || echo '否')"
+
+      - name: 下载 AOSP build-tools
+        working-directory: kernel-build
+        run: |
+          echo "=== 下载 AOSP build-tools (dtc, mkbootimg 等) ==="
+          # BUILDTOOLS_PREBUILT_BIN=build/kernel/build-tools/path/linux-x86
+          mkdir -p build/kernel
+          git clone --depth 1 -b main-kernel-build-2024 \
+            https://android.googlesource.com/kernel/prebuilts/build-tools \
+            build/kernel/build-tools
+
+          echo "build-tools 大小: $(du -sh build/kernel/build-tools | cut -f1)"
+          echo "dtc 存在: $([ -f build/kernel/build-tools/path/linux-x86/dtc ] && echo '是' || echo '否')"
+
+      - name: 下载 GCC 交叉编译工具链
+        working-directory: kernel-build
+        run: |
+          echo "=== 下载 aarch64 GCC 交叉编译工具链 ==="
+          # CAF 构建需要 GCC 用于部分编译
+          mkdir -p prebuilts/gcc/linux-x86/aarch64
+          git clone --depth 1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 2>&1 || {
+              echo "GCC 4.9 clone 失败, 尝试 LineageOS 镜像..."
+              git clone --depth 1 \
+                https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git \
+                prebuilts/gcc/linux-x86/aarch64/aarch64-linux-gnu-6.4.1
+            }
+
+          echo "GCC 大小: $(du -sh prebuilts/gcc/ | cut -f1)"
+
+      - name: 检查完整目录结构
+        working-directory: kernel-build
+        run: |
+          echo "=== 完整目录结构 ==="
+          echo "ROOT_DIR=$(pwd)"
+          echo ""
+          echo "build/build.sh: $([ -f build/build.sh ] && echo '存在' || echo '缺失')"
+          echo "build/_setup_env.sh: $([ -f build/_setup_env.sh ] && echo '存在' || echo '缺失')"
+          echo "build/kernel/build-tools/path/linux-x86/dtc: $([ -f build/kernel/build-tools/path/linux-x86/dtc ] && echo '存在' || echo '缺失')"
+          echo "common/Makefile: $([ -f common/Makefile ] && echo '存在' || echo '缺失')"
+          echo "common/build.config.gki.aarch64: $([ -f common/build.config.gki.aarch64 ] && echo '存在' || echo '缺失')"
+          echo "msm-kernel/build.config.msm.kalama: $([ -f msm-kernel/build.config.msm.kalama ] && echo '存在' || echo '缺失')"
+          echo "msm-kernel/arch/arm64/configs/vendor/nuwa_GKI.config: $([ -f msm-kernel/arch/arm64/configs/vendor/nuwa_GKI.config ] && echo '存在' || echo '缺失')"
+          echo "msm-kernel/arch/arm64/configs/gki_defconfig: $([ -f msm-kernel/arch/arm64/configs/gki_defconfig ] && echo '存在' || echo '缺失')"
+          echo ""
+          echo "=== 总磁盘使用 ==="
+          du -sh .
+          echo ""
+          echo "=== 剩余空间 ==="
+          df -h /
+
+      - name: 尝试编译内核
+        id: compile
+        continue-on-error: true
+        working-directory: kernel-build
+        run: |
+          echo "=== 开始编译 ==="
+          echo "变体: ${{ inputs.variant }}"
+          echo "时间: $(date -u)"
+          echo ""
+
+          # 设置环境变量
+          export ROOT_DIR="$(pwd)"
+          export VARIANT="${{ inputs.variant }}"
+          export HERMETIC_TOOLCHAIN=0
+          export LLVM=1
+          export CC="ccache clang"
+          export HOSTCC="clang"
+          export HOSTCXX="clang++"
+          export LD="ld.lld"
+
+          # 尝试编译
+          # BUILD_CONFIG 指向 msm-kernel 的 kalama 配置
+          # build.sh 会在 ROOT_DIR 下运行
+          set -x
+          LTO=thin BUILD_CONFIG=msm-kernel/build.config.msm.kalama \
+            build/build.sh -j$(nproc --all) 2>&1 | tee compile.log
+
+          COMPILE_EXIT=${PIPESTATUS[0]}
+          set +x
+
+          echo ""
+          echo "=== 编译退出码: $COMPILE_EXIT ==="
+
+          # 检查产物
+          echo "=== 检查编译产物 ==="
+          find . -name "Image" -type f 2>/dev/null | head -5
+          find . -name "*.ko" -type f 2>/dev/null | wc -l
+          find . -name "dtbs" -type d 2>/dev/null | head -5
+
+          exit $COMPILE_EXIT
+
+      - name: 收集编译日志
+        if: always()
+        working-directory: kernel-build
+        run: |
+          mkdir -p logs
+
+          # 编译日志
+          [ -f compile.log ] && cp compile.log logs/ || true
+
+          # 编译错误提取
+          echo "=== 编译错误 (最后 100 行) ===" > logs/errors.txt
+          tail -100 compile.log 2>/dev/null >> logs/errors.txt || true
+
+          # 目录结构
+          echo "=== out/ 目录 ===" > logs/out-dir.txt
+          find out/ -type f 2>/dev/null | head -50 >> logs/out-dir.txt || echo "out/ 不存在" >> logs/out-dir.txt
+
+          # 磁盘使用
+          echo "=== 磁盘使用 ===" > logs/disk.txt
+          df -h / >> logs/disk.txt 2>&1
+          du -sh . >> logs/disk.txt 2>&1
+          du -sh */ >> logs/disk.txt 2>&1
+
+          # 编译产物
+          echo "=== 编译产物 ===" > logs/artifacts.txt
+          find . -name "Image" -type f >> logs/artifacts.txt 2>/dev/null || true
+          find . -name "*.ko" -type f >> logs/artifacts.txt 2>/dev/null || true
+          find . -name "*.img" -type f >> logs/artifacts.txt 2>/dev/null || true
+          find . -name "vmlinux" -type f >> logs/artifacts.txt 2>/dev/null || true
+
+          echo "日志收集完成"
+
+      - name: 上传编译日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-build-logs
+          path: kernel-build/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 上传完整编译日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-full-log
+          path: kernel-build/compile.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 上传编译产物
+        if: always() && steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-kernel-output
+          path: |
+            kernel-build/out/*/dist/
+            kernel-build/bazel-bin/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 汇总结果
+        if: always()
+        working-directory: kernel-build
+        run: |
+          echo "========================================"
+          echo "       Stage 2 编译结果"
+          echo "========================================"
+          if [ "${{ steps.compile.outcome }}" == "success" ]; then
+            echo "状态: 成功"
+            echo ""
+            echo "产物:"
+            find . -name "Image" -type f 2>/dev/null | head -5
+            find . -name "*.ko" -type f 2>/dev/null | wc -l
+          else
+            echo "状态: 失败"
+            echo ""
+            echo "失败原因 (最后 30 行日志):"
+            tail -30 compile.log 2>/dev/null || echo "无日志"
+          fi
+          echo ""
+          echo "磁盘使用:"
+          df -h /
+          echo "========================================"
